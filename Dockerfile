@@ -1,4 +1,3 @@
-
 # syntax=docker/dockerfile:1.7
 
 # ============================================================
@@ -6,7 +5,8 @@
 # ============================================================
 FROM debian:trixie-slim AS builder
 
-ARG MAPSERVER_VERSION=8.6.6
+# Any GitHub reference: a release tag (rel-8-6-6), a branch (main, branch-8-6)
+ARG MAPSERVER_REF=rel-8-6-6
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -40,7 +40,7 @@ RUN apt-get update \
 WORKDIR /build
 
 RUN curl -fSL \
-    "https://download.osgeo.org/mapserver/mapserver-${MAPSERVER_VERSION}.tar.gz" \
+    "https://github.com/MapServer/MapServer/archive/${MAPSERVER_REF}.tar.gz" \
     -o mapserver.tar.gz \
     && mkdir mapserver \
     && tar -xzf mapserver.tar.gz \
@@ -71,8 +71,9 @@ RUN cmake .. \
     && cmake --build . --parallel 2 \
     && cmake --install .
 
-# Verify FastCGI support
-RUN /usr/local/bin/mapserv -v | grep -q "SUPPORTS=FASTCGI"
+# Verify FastCGI support and display version
+RUN /usr/local/bin/mapserv -v \
+    && /usr/local/bin/mapserv -v | grep -q "SUPPORTS=FASTCGI"
 
 # ============================================================
 # Stage 2: Minimal Nginx + MapServer
@@ -82,18 +83,23 @@ FROM nginx:stable-trixie
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PROJ_DATA=/usr/share/proj
 ENV MS_ERRORFILE=stderr
-ENV debug=1
+
+ARG MSCOREFONTS_DEB=ttf-mscorefonts-installer_3.8.1_all.deb
 
 RUN apt-get update \
-    && apt-get upgrade -y 
-
-# install mscorefonts
-RUN apt-get install -y cabextract xfonts-utils fontconfig wget dpkg 
-RUN wget http://ftp.us.debian.org/debian/pool/contrib/m/msttcorefonts/ttf-mscorefonts-installer_3.8.1_all.deb 
-RUN dpkg -i ttf-mscorefonts-installer_3.8.1_all.deb 
-RUN fc-cache -f -v
-
-RUN apt-get install -y --no-install-recommends \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+    cabextract \
+    xfonts-utils \
+    fontconfig \
+    wget \
+    && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
+       | debconf-set-selections \
+    && wget -q "https://deb.debian.org/debian/pool/contrib/m/msttcorefonts/${MSCOREFONTS_DEB}" \
+    && apt-get install -y --no-install-recommends "./${MSCOREFONTS_DEB}" \
+    && rm -f "${MSCOREFONTS_DEB}" \
+    && fc-cache -f \
+    && apt-get install -y --no-install-recommends \
     spawn-fcgi \
     tini \
     libfcgi0ldbl \
@@ -149,9 +155,6 @@ COPY maps/* /maps/.
 COPY html/favicon.ico /usr/share/nginx/html/favicon.ico
 COPY html/robots.txt /usr/share/nginx/html/robots.txt
 
-# MapServer environment
-ENV PROJ_DATA=/usr/share/proj
-
 # ============================================================
 # Nginx configuration
 # ============================================================
@@ -194,10 +197,9 @@ server {
         add_header 'Access-Control-Allow-Origin' '*' always;
         add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
         add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range' always;
-        
+
         # Optional debug header to verify if cache is hit
         add_header X-Cache-Status $upstream_cache_status;
-        
         include fastcgi_params;
 
         fastcgi_pass 127.0.0.1:9000;
@@ -216,12 +218,17 @@ NGINX
 EOF
 
 
+ENV MS_ONLINERESOURCE=http://localhost:8080/
+
+# Default config template. At startup /maps/mapserver.conf is used instead if it exists
+# the chosen template is written to /etc/mapserver/mapserver.conf with
+# @MS_ONLINERESOURCE@ replaced. The file in /maps is never modified.
 RUN <<'EOF'
-cat > /maps/mapserver.conf <<'MAPCONF'
+cat > /etc/mapserver/mapserver.conf.in <<'MAPCONF'
 CONFIG
   ENV
     MS_MAP_NO_PATH "1"
-    MS_ONLINERESOURCE "http://localhost:8080/"
+    MS_ONLINERESOURCE "@MS_ONLINERESOURCE@"
     OGCAPI_HTML_TEMPLATE_DIRECTORY "/usr/local/share/mapserver/ogcapi/templates/html-bootstrap/"
     MS_INDEX_TEMPLATE_DIRECTORY "/usr/local/share/mapserver/ogcapi/templates/html-index-bootstrap/"
   END
@@ -233,7 +240,7 @@ END
 MAPCONF
 EOF
 
-ENV MAPSERVER_CONFIG_FILE=/maps/mapserver.conf
+ENV MAPSERVER_CONFIG_FILE=/etc/mapserver/mapserver.conf
 
 # ============================================================
 # FastCGI and Nginx startup
@@ -245,4 +252,5 @@ EXPOSE 80
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
-CMD ["/bin/sh", "-ec", "spawn-fcgi -a 127.0.0.1 -p 9000 -F 2 -u nginx -g nginx -f /usr/local/bin/mapserv; exec nginx -g 'daemon off;'"]
+CMD ["/bin/sh", "-ec", "if [ -f /maps/mapserver.conf ]; then tpl=/maps/mapserver.conf; else tpl=/etc/mapserver/mapserver.conf.in; fi; sed \"s|@MS_ONLINERESOURCE@|${MS_ONLINERESOURCE}|\" \"$tpl\" > \"$MAPSERVER_CONFIG_FILE\"; spawn-fcgi -a 127.0.0.1 -p 9000 -F 2 -u nginx -g nginx -f /usr/local/bin/mapserv; exec nginx -g 'daemon off;'"]
+
