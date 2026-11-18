@@ -7,6 +7,15 @@ MAP
   SIZE 800 400
   IMAGETYPE PNG
   FONTSET "/etc/mapserver/fonts.txt"
+  OUTPUTFORMAT
+      NAME "application/vnd.geo+json"      
+      DRIVER "OGR/GEOJSON"      
+      MIMETYPE "application/json; subtype=geojson; charset=utf-8"      
+      FORMATOPTION "FORM=SIMPLE"      
+      FORMATOPTION "STORAGE=memory"       
+      FORMATOPTION "LCO:NATIVE_MEDIA_TYPE=application/vnd.geo+json"      
+      FORMATOPTION "USE_FEATUREID=true"  
+  END
   WEB
     METADATA
       "ows_title"                   "Countries"
@@ -17,7 +26,8 @@ MAP
       "oga_enable_request"          "*"
       "oga_title"                   "Countries"
       "oga_description"             "Simple countries dataset"
-      "wms_rootlayer_name" ""
+      "wms_rootlayer_name"          ""
+      "wms_getfeatureinfo_formatlist" "application/vnd.geo+json"
     END
   END
   PROJECTION
